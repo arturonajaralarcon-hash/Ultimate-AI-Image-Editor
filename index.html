@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate AI Image Editor</title>
+    <link rel="stylesheet" href="index.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/genai": "https://esm.sh/@google/genai@1.0.0"
+        }
+      }
+    </script>
+</head>
+<body>
+    <div id="app-container">
+        <header class="app-header">
+            <div class="header-content">
+                <h1>Ultimate AI Image Editor</h1>
+                <p>Upload an image to edit it, or save it with a key to reference it using @key_name.</p>
+            </div>
+            <button id="manage-references-btn" class="icon-btn" aria-label="Manage References" title="Manage References">📚</button>
+        </header>
+        <main id="chat-container">
+            <div id="chat-history">
+                <!-- Chat messages will be appended here -->
+            </div>
+            <div id="loading-indicator" class="hidden">
+                <div class="spinner"></div>
+            </div>
+        </main>
+        <footer class="chat-footer">
+            <div id="image-preview-container" class="hidden">
+                <img id="image-preview" src="" alt="Image preview"/>
+                <div class="preview-actions">
+                    <button id="edit-mask-btn" class="icon-btn" aria-label="Edit Mask">🎨</button>
+                    <button id="remove-image-btn" class="icon-btn" aria-label="Remove Image">&times;</button>
+                </div>
+            </div>
+            <form id="chat-form">
+                <input type="file" id="image-upload" class="hidden" accept="image/*">
+                <button id="upload-btn" type="button" class="icon-btn" aria-label="Upload Image">📎</button>
+                <button id="ref-picker-btn" type="button" class="icon-btn" aria-label="Insert Reference">@</button>
+                <textarea id="prompt-input" placeholder="Describe your edit or use @key..." rows="1"></textarea>
+                <button id="send-btn" type="submit" class="icon-btn" aria-label="Send Message">➤</button>
+            </form>
+        </footer>
+    </div>
+
+    <div id="editor-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2>Image Mask Editor</h2>
+                <button class="close-btn icon-btn">&times;</button>
+            </header>
+            <div class="editor-body">
+                <div id="editor-tools">
+                    <div class="tool-group">
+                        <label>Tools</label>
+                        <div id="tool-selection" class="tool-palette">
+                            <button class="tool-btn active" data-tool="brush" title="Brush">🖌️</button>
+                            <button class="tool-btn" data-tool="eraser" title="Eraser">🧼</button>
+                            <button class="tool-btn" data-tool="rectangle" title="Rectangle">▭</button>
+                            <button class="tool-btn" data-tool="circle" title="Circle">⚪</button>
+                        </div>
+                    </div>
+                    <div class="tool-group">
+                        <label>Color</label>
+                        <div id="color-palette" class="tool-palette">
+                            <button class="color-btn selected" style="background-color: #E53935;" data-color="#E53935"></button>
+                            <button class="color-btn" style="background-color: #43A047;" data-color="#43A047"></button>
+                            <button class="color-btn" style="background-color: #1E88E5;" data-color="#1E88E5"></button>
+                            <button class="color-btn" style="background-color: #FDD835;" data-color="#FDD835"></button>
+                            <button class="color-btn" style="background-color: #000000;" data-color="#000000"></button>
+                            <button class="color-btn" style="background-color: #FFFFFF;" data-color="#FFFFFF"></button>
+                        </div>
+                    </div>
+                    <div class="tool-group">
+                        <label for="brush-size">Size</label>
+                        <input type="range" id="brush-size" min="2" max="100" value="20">
+                    </div>
+                     <div class="tool-group">
+                        <label>Actions</label>
+                        <div class="tool-palette">
+                           <button id="undo-btn" class="tool-btn" title="Undo">↩️</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="editor-canvas"></canvas>
+                </div>
+            </div>
+            <footer class="modal-footer">
+                <button id="save-mask-btn" class="action-btn">Save Changes</button>
+            </footer>
+        </div>
+    </div>
+
+    <div id="save-key-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2>Save Image Reference</h2>
+                <button class="close-btn icon-btn">&times;</button>
+            </header>
+            <div class="modal-body">
+                <p>Assign a key to this image to easily reference it later in your prompts using @your_key.</p>
+                <img id="save-key-preview" src="" alt="Image preview for saving"/>
+                <div class="form-group">
+                    <label for="reference-key-input">Reference Key (optional)</label>
+                    <input type="text" id="reference-key-input" placeholder="e.g., dog_photo">
+                    <p id="key-error-message" class="error-text"></p>
+                </div>
+            </div>
+            <footer class="modal-footer">
+                <button id="use-once-btn" class="action-btn secondary">Use Once</button>
+                <button id="save-key-btn" class="action-btn">Save & Use</button>
+            </footer>
+        </div>
+    </div>
+
+    <div id="references-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <header class="modal-header">
+                <h2>Manage References</h2>
+                <button class="close-btn icon-btn">&times;</button>
+            </header>
+            <div class="modal-body" id="references-list-container">
+                <div id="references-list">
+                    <!-- Saved references will be populated here by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="reference-picker-popover" class="popover hidden">
+        <div class="popover-header">
+            <input type="text" id="reference-search-input" placeholder="Search references...">
+        </div>
+        <div id="reference-picker-grid">
+            <!-- Reference items will be populated here -->
+        </div>
+    </div>
+
+    <script type="module" src="index.tsx"></script>
+</body>
+</html>
