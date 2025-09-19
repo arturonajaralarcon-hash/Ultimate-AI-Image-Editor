@@ -264,6 +264,8 @@ body {
     background-color: #444;
     border-radius: var(--border-radius);
     overflow: hidden;
+    box-shadow: 0 0 0 0px transparent;
+    transition: box-shadow 0.2s ease-in-out;
 }
 #image-preview {
     width: 100%;
@@ -289,6 +291,25 @@ body {
 .preview-actions .icon-btn:hover {
     background-color: rgba(0, 0, 0, 0.8);
 }
+#image-preview-container.mask-applied {
+    box-shadow: 0 0 0 3px var(--primary-color);
+}
+#image-preview-container.mask-applied::after {
+    content: 'Mask Applied';
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(138, 43, 226, 0.9);
+    color: white;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: bold;
+    text-align: center;
+    z-index: 1;
+}
+
 
 /* Modal */
 .modal-overlay {
@@ -337,7 +358,7 @@ body {
 #editor-tools {
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1.25rem;
     padding-right: 1rem;
     border-right: 1px solid var(--border-color);
 }
@@ -349,8 +370,9 @@ body {
 .tool-group label {
     font-weight: bold;
     color: var(--text-muted-color);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
     text-transform: uppercase;
+    margin-bottom: 0.25rem;
 }
 .tool-palette {
     display: flex;
@@ -386,6 +408,50 @@ body {
     font-size: 1.5rem;
 }
 
+/* Sliders */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  background: #555;
+  border-radius: 3px;
+  outline: none;
+  opacity: 0.8;
+  transition: opacity .2s;
+  cursor: pointer;
+}
+input[type="range"]:hover {
+  opacity: 1;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--text-color);
+  cursor: pointer;
+  border-radius: 50%;
+  border: 2px solid var(--surface-color);
+  box-shadow: 0 0 4px rgba(0,0,0,0.5);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: var(--text-color);
+  cursor: pointer;
+  border-radius: 50%;
+  border: 2px solid var(--surface-color);
+  box-shadow: 0 0 4px rgba(0,0,0,0.5);
+}
+input[type="range"]:active::-webkit-slider-thumb {
+    background: var(--primary-color);
+}
+input[type="range"]:active::-moz-range-thumb {
+    background: var(--primary-color);
+}
+
+
 .canvas-container {
     flex-grow: 1;
     display: flex;
@@ -393,6 +459,9 @@ body {
     align-items: center;
     background-color: var(--background-color);
     overflow: auto;
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 #editor-canvas {
   max-width: 100%;

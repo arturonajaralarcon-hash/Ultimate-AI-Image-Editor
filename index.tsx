@@ -19,7 +19,6 @@ let stagedImage: {
     data: string;
     mimeType: string;
     maskData?: string; // The pure black-and-white mask for the API
-    maskPreviewData?: string; // The composite image for the UI preview
 } | null = null;
 let imageToSave: { data: string; mimeType: string } | null = null;
 let saveModalSource: 'upload' | 'generated' | null = null;
@@ -31,6 +30,9 @@ let currentTool = 'brush';
 let canvasHistory: ImageData[] = [];
 let shapeStartX = 0;
 let shapeStartY = 0;
+let lastPos: { x: number, y: number } | null = null;
+let currentBrushShape = 'round'; // 'round' or 'square'
+let currentOpacity = 0.7;
 
 
 // --- DOM ELEMENTS ---
@@ -56,9 +58,11 @@ const referencePickerGrid = document.getElementById('reference-picker-grid')!;
 const editorModal = document.getElementById('editor-modal')!;
 const editorCloseBtn = editorModal.querySelector('.close-btn')!;
 const brushSize = document.getElementById('brush-size') as HTMLInputElement;
+const brushOpacity = document.getElementById('brush-opacity') as HTMLInputElement;
 const editorCanvas = document.getElementById('editor-canvas') as HTMLCanvasElement;
 const saveMaskBtn = document.getElementById('save-mask-btn')!;
 const toolSelection = document.getElementById('tool-selection')!;
+const brushShapeSelection = document.getElementById('brush-shape')!;
 const colorPalette = document.getElementById('color-palette')!;
 const undoBtn = document.getElementById('undo-btn')!;
 const ctx = editorCanvas.getContext('2d')!;
@@ -96,7 +100,7 @@ async function handleFormSubmit(e: Event) {
 
     if (!prompt && !stagedImage) return;
 
-    const userImageData = stagedImage?.maskPreviewData || stagedImage?.data;
+    const userImageData = stagedImage?.data;
     addMessage('user', prompt, userImageData ? [userImageData] : []);
 
     const imageToSend = stagedImage;
@@ -173,7 +177,13 @@ function parsePromptForReferences(prompt: string): { referencedKeys: Set<string>
  */
 function buildApiParts(prompt: string, image: typeof stagedImage | null, referencedKeys: Set<string>): Part[] {
     const parts: Part[] = [];
-    const effectivePrompt = prompt || (image ? 'Describe this image.' : '');
+    let effectivePrompt = prompt || (image ? 'Describe this image.' : '');
+
+    // If a mask is being used, add a special instruction to the prompt
+    // to ensure seamless blending and avoid visual artifacts from the mask itself.
+    if (image?.maskData) {
+        effectivePrompt += "\n\n(Note: The provided mask indicates the area for editing. Please ensure the final image is seamless, with no visible outlines or borders around the edited region. The edit should blend naturally with the rest of the image.)";
+    }
 
     if (effectivePrompt) {
         parts.push({ text: effectivePrompt });
@@ -345,6 +355,7 @@ function resetInputArea() {
     imageUpload.value = '';
     stagedImage = null;
     imagePreviewContainer.classList.add('hidden');
+    imagePreviewContainer.classList.remove('mask-applied');
     referencePickerPopover.classList.add('hidden');
 }
 
@@ -361,6 +372,7 @@ function handleFileSelect(event: Event) {
         const data = e.target?.result as string;
         stagedImage = { file, data, mimeType: file.type };
         imagePreview.src = data;
+        imagePreviewContainer.classList.remove('mask-applied');
         imagePreviewContainer.classList.remove('hidden');
         openSaveKeyModal(data, file.type, 'upload');
     };
@@ -378,6 +390,7 @@ function stageGeneratedImageForEditing(dataUrl: string) {
 
     stagedImage = { file, data: dataUrl, mimeType };
     imagePreview.src = dataUrl;
+    imagePreviewContainer.classList.remove('mask-applied');
     imagePreviewContainer.classList.remove('hidden');
     promptInput.scrollIntoView({ behavior: 'smooth', block: 'end' });
     promptInput.focus();
@@ -604,9 +617,17 @@ function openEditor() {
     originalImage.onload = () => {
         editorCanvas.width = originalImage!.naturalWidth;
         editorCanvas.height = originalImage!.naturalHeight;
-        ctx.drawImage(originalImage!, 0, 0);
+
+        // Set the image as a background to the container, not on the canvas
+        const canvasContainer = editorCanvas.parentElement as HTMLElement;
+        canvasContainer.style.backgroundImage = `url(${originalImage!.src})`;
+        
+        // Clear the canvas for drawing
+        ctx.clearRect(0, 0, editorCanvas.width, editorCanvas.height);
+        
         editorModal.classList.remove('hidden');
-        // Reset history and save initial state
+
+        // Reset history and save initial (blank) state
         canvasHistory = [];
         saveCanvasState();
     };
@@ -615,35 +636,33 @@ function openEditor() {
 
 function closeEditor() {
     editorModal.classList.add('hidden');
+    // Clean up the background image
+    const canvasContainer = editorCanvas.parentElement as HTMLElement;
+    if (canvasContainer) {
+        canvasContainer.style.backgroundImage = 'none';
+    }
     originalImage = null;
     canvasHistory = [];
     ctx.clearRect(0, 0, editorCanvas.width, editorCanvas.height);
 }
 
 function saveMask() {
-    if (!stagedImage || canvasHistory.length === 0) return;
+    if (!stagedImage || !originalImage) return;
 
-    const originalImageData = canvasHistory[0];
-    const currentImageData = ctx.getImageData(0, 0, editorCanvas.width, editorCanvas.height);
-    
+    // --- Generate the black and white mask for the API ---
     const maskCanvas = document.createElement('canvas');
     maskCanvas.width = editorCanvas.width;
     maskCanvas.height = editorCanvas.height;
     const maskCtx = maskCanvas.getContext('2d')!;
+    const currentImageData = ctx.getImageData(0, 0, editorCanvas.width, editorCanvas.height);
     const maskImageData = maskCtx.createImageData(editorCanvas.width, editorCanvas.height);
 
-    const originalPixels = originalImageData.data;
     const currentPixels = currentImageData.data;
     const maskPixels = maskImageData.data;
 
-    // Iterate through pixels. If a pixel has changed, make it white in the mask. Otherwise, black.
-    for (let i = 0; i < originalPixels.length; i += 4) {
-        const hasChanged = originalPixels[i] !== currentPixels[i] ||
-                           originalPixels[i + 1] !== currentPixels[i + 1] ||
-                           originalPixels[i + 2] !== currentPixels[i + 2] ||
-                           originalPixels[i + 3] !== currentPixels[i + 3];
-        
-        if (hasChanged) {
+    // Iterate through pixels. If a pixel has any opacity, make it white. Otherwise, black.
+    for (let i = 0; i < currentPixels.length; i += 4) {
+        if (currentPixels[i + 3] > 0) { // Check alpha channel
             // White for masked area
             maskPixels[i] = 255;
             maskPixels[i + 1] = 255;
@@ -661,9 +680,9 @@ function saveMask() {
     maskCtx.putImageData(maskImageData, 0, 0);
     stagedImage.maskData = maskCanvas.toDataURL(stagedImage.mimeType);
 
-    // For the UI preview, show the image with the user's colorful drawings
-    stagedImage.maskPreviewData = editorCanvas.toDataURL(stagedImage.mimeType);
-    imagePreview.src = stagedImage.maskPreviewData;
+    // Update the UI to show the original image, but with an indicator that a mask is applied
+    imagePreview.src = stagedImage.data;
+    imagePreviewContainer.classList.add('mask-applied');
 
     closeEditor();
 }
@@ -691,14 +710,14 @@ function getMousePos(e: MouseEvent): { x: number, y: number } {
 
 function startDraw(e: MouseEvent) {
     isDrawing = true;
-    const { x, y } = getMousePos(e);
+    const pos = getMousePos(e);
+    lastPos = pos;
 
     if (currentTool === 'brush' || currentTool === 'eraser') {
-        ctx.beginPath();
-        ctx.moveTo(x, y);
+        drawStamp(pos.x, pos.y);
     } else if (currentTool === 'rectangle' || currentTool === 'circle') {
-        shapeStartX = x;
-        shapeStartY = y;
+        shapeStartX = pos.x;
+        shapeStartY = pos.y;
     }
 }
 
@@ -706,40 +725,104 @@ function stopDraw(e: MouseEvent) {
     if (!isDrawing) return;
     isDrawing = false;
     
-    // For shapes, draw the final shape on mouseup
     if (currentTool === 'rectangle' || currentTool === 'circle') {
         ctx.putImageData(canvasHistory[canvasHistory.length - 1], 0, 0); // Clear preview
+        
+        const activeColorHex = (colorPalette.querySelector('.selected') as HTMLElement)?.dataset.color || '#E53935';
+        ctx.fillStyle = hexToRgba(activeColorHex, currentOpacity);
+
         const { x, y } = getMousePos(e);
         drawShape(shapeStartX, shapeStartY, x, y);
     }
     
+    lastPos = null;
     saveCanvasState();
 }
 
+/** Converts a hex color string to an rgba string. */
+function hexToRgba(hex: string, alpha: number): string {
+    let r = 0, g = 0, b = 0;
+    if (hex.length == 4) { // #RGB
+        r = parseInt(hex[1] + hex[1], 16);
+        g = parseInt(hex[2] + hex[2], 16);
+        b = parseInt(hex[3] + hex[3], 16);
+    } else if (hex.length == 7) { // #RRGGBB
+        r = parseInt(hex.substring(1, 3), 16);
+        g = parseInt(hex.substring(3, 5), 16);
+        b = parseInt(hex.substring(5, 7), 16);
+    }
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/** Draws a soft, feathered, or hard stamp based on current settings. */
+function drawStamp(x: number, y: number) {
+    const brushSizeVal = parseInt(brushSize.value, 10);
+    const brushRadius = brushSizeVal / 2;
+    if (brushRadius <= 0) return;
+
+    const isEraser = currentTool === 'eraser';
+    ctx.globalCompositeOperation = isEraser ? 'destination-out' : 'source-over';
+    
+    const activeColorHex = (colorPalette.querySelector('.selected') as HTMLElement)?.dataset.color || '#E53935';
+    const baseColor = isEraser ? '#000000' : activeColorHex;
+
+    if (currentBrushShape === 'round') {
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, brushRadius);
+        // The core of the brush has the user-set opacity
+        gradient.addColorStop(0, hexToRgba(baseColor, currentOpacity));
+        // Fade to fully transparent at the edge for a feathered effect
+        gradient.addColorStop(1, hexToRgba(baseColor, 0));
+        ctx.fillStyle = gradient;
+        
+        ctx.beginPath();
+        ctx.arc(x, y, brushRadius, 0, Math.PI * 2, false);
+        ctx.fill();
+
+    } else if (currentBrushShape === 'square') {
+        // The square brush remains hard-edged.
+        ctx.fillStyle = hexToRgba(baseColor, currentOpacity);
+        // Center the fillRect on the cursor position
+        ctx.fillRect(x - brushRadius, y - brushRadius, brushSizeVal, brushSizeVal);
+    }
+}
+
+/** Interpolates between two points to draw a continuous line of stamps. */
+function drawInterpolatedLine(x1: number, y1: number, x2: number, y2: number) {
+    const dist = Math.hypot(x2 - x1, y2 - y1);
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const brushRadius = parseInt(brushSize.value, 10) / 2;
+    // Step size should be small enough to avoid gaps. A fraction of the radius is good.
+    const step = Math.max(1, brushRadius / 4);
+
+    for (let i = 0; i < dist; i += step) {
+        const x = x1 + Math.cos(angle) * i;
+        const y = y1 + Math.sin(angle) * i;
+        drawStamp(x, y);
+    }
+    // Ensure the final point is drawn to complete the line
+    drawStamp(x2, y2);
+}
+
+
 function draw(e: MouseEvent) {
     if (!isDrawing) return;
-    const { x, y } = getMousePos(e);
+    const pos = getMousePos(e);
 
-    // Set common drawing properties
-    ctx.lineWidth = parseInt(brushSize.value, 10);
-    ctx.lineCap = 'round';
-    const activeColor = (colorPalette.querySelector('.selected') as HTMLElement)?.dataset.color || '#E53935';
-    ctx.strokeStyle = activeColor;
-    ctx.fillStyle = activeColor;
-    
-    if (currentTool === 'brush') {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.lineTo(x, y);
-        ctx.stroke();
-    } else if (currentTool === 'eraser') {
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.lineTo(x, y);
-        ctx.stroke();
+    if (currentTool === 'brush' || currentTool === 'eraser') {
+        if (lastPos) {
+            drawInterpolatedLine(lastPos.x, lastPos.y, pos.x, pos.y);
+        }
     } else if (currentTool === 'rectangle' || currentTool === 'circle') {
         // Restore previous state for preview, then draw shape
         ctx.putImageData(canvasHistory[canvasHistory.length - 1], 0, 0);
-        drawShape(shapeStartX, shapeStartY, x, y);
+        
+        const activeColorHex = (colorPalette.querySelector('.selected') as HTMLElement)?.dataset.color || '#E53935';
+        ctx.fillStyle = hexToRgba(activeColorHex, currentOpacity);
+
+        drawShape(shapeStartX, shapeStartY, pos.x, pos.y);
     }
+    
+    lastPos = pos;
 }
 
 function drawShape(x1: number, y1: number, x2: number, y2: number) {
@@ -836,7 +919,6 @@ function initializeApp() {
 
     toolSelection.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        // Fix: Cast the result of `closest` to HTMLElement to access `dataset`.
         const toolBtn = target.closest<HTMLElement>('.tool-btn');
         if (toolBtn?.dataset.tool) {
             toolSelection.querySelector('.active')?.classList.remove('active');
@@ -844,10 +926,23 @@ function initializeApp() {
             currentTool = toolBtn.dataset.tool;
         }
     });
+    
+    brushShapeSelection.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const shapeBtn = target.closest<HTMLElement>('.tool-btn');
+        if (shapeBtn?.dataset.shape) {
+            brushShapeSelection.querySelector('.active')?.classList.remove('active');
+            shapeBtn.classList.add('active');
+            currentBrushShape = shapeBtn.dataset.shape;
+        }
+    });
+
+    brushOpacity.addEventListener('input', () => {
+        currentOpacity = parseInt(brushOpacity.value, 10) / 100;
+    });
 
     colorPalette.addEventListener('click', (e) => {
         const target = e.target as HTMLElement;
-        // Fix: Cast the result of `closest` to HTMLElement to access `dataset`.
         const colorBtn = target.closest<HTMLElement>('.color-btn');
         if (colorBtn?.dataset.color) {
             colorPalette.querySelector('.selected')?.classList.remove('selected');
